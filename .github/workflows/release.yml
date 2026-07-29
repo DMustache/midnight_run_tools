@@ -1,64 +1,131 @@
-name: Release
+name: CI / Release
 
 on:
   push:
+    branches:
+      - main
     tags:
-      - "*"
+      - "v*"
+  pull_request:
   workflow_dispatch:
-
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable-x86_64-pc-windows-msvc
+
 jobs:
-  release:
-    name: Build and publish release
+  build:
+    name: Build Windows release
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build release binaries
-        run: cargo build --release --bins
+      - name: Select MSVC Rust toolchain
+        shell: pwsh
+        run: |
+          rustup default $env:RUST_TOOLCHAIN
 
-      - name: Package binaries
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Build release binaries
+        run: cargo build --release --locked --bins
+
+      - name: Package release artifacts
         shell: pwsh
         run: |
           $dist = "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
-          $binaries = @(
-            "boot_breaker",
-            "blimp_jump",
-            "automation_attack"
+          $packages = @(
+            @{
+              Name = "boot_breaker"
+              Archive = "boot_breaker-windows-x86_64.zip"
+              ExtraFiles = @("boot_flying_template.png")
+            },
+            @{
+              Name = "automation_attack"
+              Archive = "automation_attack-windows-x86_64.zip"
+              ExtraFiles = @()
+            }
           )
 
-          foreach ($binary in $binaries) {
-            $exe = "target/release/$binary.exe"
-            $zip = "$dist/$binary-windows-x86_64.zip"
+          foreach ($item in $packages) {
+            $name = $item.Name
+            $package = "package/$name"
+            $exe = "target/release/$name.exe"
+            $archive = "$dist/$($item.Archive)"
 
             if (!(Test-Path $exe)) {
               throw "Missing release binary: $exe"
             }
 
-            Compress-Archive -Path $exe -DestinationPath $zip -Force
+            New-Item -ItemType Directory -Force -Path $package | Out-Null
+            Copy-Item $exe "$package/$name.exe" -Force
+            Copy-Item README.md $package -Force
+            Copy-Item LICENSE $package -Force
+
+            foreach ($file in $item.ExtraFiles) {
+              if (!(Test-Path $file)) {
+                throw "Missing package dependency for ${name}: $file"
+              }
+              Copy-Item $file $package -Force
+            }
+
+            Compress-Archive -Path "$package/*" -DestinationPath $archive -Force
           }
 
-      - name: Publish GitHub release
-        shell: pwsh
+          $hashFiles = Get-ChildItem "$dist/*.zip" | ForEach-Object { $_.FullName }
+          Get-FileHash -Algorithm SHA256 $hashFiles |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
+            Set-Content "$dist/SHA256SUMS"
+
+          Get-ChildItem $dist | Format-Table -AutoSize
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: midnight_run_tools-windows-x86_64
+          path: |
+            dist/boot_breaker-windows-x86_64.zip
+            dist/automation_attack-windows-x86_64.zip
+            dist/SHA256SUMS
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: midnight_run_tools-windows-x86_64
+          path: dist
+
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
-          $assets = Get-ChildItem dist/*.zip | ForEach-Object { $_.FullName }
-
-          gh release view $env:TAG_NAME *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:TAG_NAME $assets --clobber
-          } else {
-            gh release create $env:TAG_NAME `
-              --title $env:TAG_NAME `
-              --notes "Release $env:TAG_NAME" `
-              $assets
-          }
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release upload "${TAG_NAME}" dist/* --clobber
+          else
+            gh release create "${TAG_NAME}" dist/* \
+              --title "Midnight Run Tools Windows ${TAG_NAME}" \
+              --notes "Windows x86_64 MSVC release build for Dota 2 Dark Carnival / Midnight Run tools. Download the archive for the tool you want to install."
+          fi
