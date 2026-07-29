@@ -1,7 +1,19 @@
 [package]
-name = "boot_catcher_rs"
+name = "midnight_run_tools"
 version = "0.1.1"
 edition = "2024"
+
+[lib]
+name = "midnight_run_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "boot_breaker"
+path = "src/bin/boot_breaker.rs"
+
+[[bin]]
+name = "automation_attack"
+path = "src/bin/automation_attack.rs"
 
 [profile.release]
 lto = "thin"
